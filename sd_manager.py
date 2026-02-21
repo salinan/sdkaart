@@ -51,17 +51,20 @@ def save_config(cfg):
 
 
 def get_removable_drives():
-    """Geeft lijst van verwisselbare schijven terug als (letter, label, size_gb)."""
+    """Geeft lijst van verwisselbare schijven terug als (letter, label, size_gb).
+    Lege slots (geen media) worden gefilterd."""
     drives = []
     for part in psutil.disk_partitions(all=False):
         if "removable" in part.opts or part.fstype in ("FAT32", "FAT", "exFAT"):
             try:
                 usage = psutil.disk_usage(part.mountpoint)
                 size_gb = usage.total / (1024 ** 3)
+                if size_gb < 0.01:  # lege slot in multicard lezer
+                    continue
                 label = part.mountpoint.rstrip("\\")
                 drives.append((label, f"{label}  [{size_gb:.1f} GB]", size_gb))
             except Exception:
-                pass
+                pass  # niet mountbaar = lege slot, overslaan
     # Windows-specifieke fallback via wmic
     if not drives:
         try:
@@ -77,9 +80,11 @@ def get_removable_drives():
                     name = parts[3].strip() or "Geen label"
                     try:
                         size_gb = int(parts[2].strip()) / (1024 ** 3)
+                        if size_gb < 0.01:
+                            continue
                         drives.append((letter, f"{letter}  {name}  [{size_gb:.1f} GB]", size_gb))
                     except Exception:
-                        drives.append((letter, f"{letter}  {name}", None))
+                        pass  # geen grootte = lege slot
         except Exception:
             pass
     return drives
@@ -260,6 +265,16 @@ class App(ctk.CTk):
         self._build_ui()
         self._load_source_if_set()
         self._poll_drives()
+        self._center_window(self, 780, 620)
+
+    def _center_window(self, win, width, height):
+        """Centreert een venster op het scherm."""
+        win.update_idletasks()
+        sw = win.winfo_screenwidth()
+        sh = win.winfo_screenheight()
+        x = (sw - width) // 2
+        y = (sh - height) // 2
+        win.geometry(f"{width}x{height}+{x}+{y}")
 
     # ── UI opbouw ──────────────────────────────────────────────────────────────
 
@@ -380,28 +395,34 @@ class App(ctk.CTk):
     # ── Drive polling ──────────────────────────────────────────────────────────
 
     def _poll_drives(self):
-        current = set(d[0] for d in get_removable_drives())
+        current_drives = get_removable_drives()
+        current = set(d[0] for d in current_drives)
         new_drives = current - self.known_drives
         removed_drives = self.known_drives - current
 
         if new_drives:
             for d in new_drives:
                 self.log(f"🔌  Nieuwe drive gevonden: {d}", "info")
-            self._refresh_drives()
+            self._refresh_drives(current_drives)
             if self.auto_var.get() and not self._busy:
                 self._start_process()
 
         if removed_drives:
             for d in removed_drives:
                 self.log(f"📤  Drive verwijderd: {d}", "warning")
-            self._refresh_drives()
+            self._refresh_drives(current_drives)
+
+        # Alleen updaten als er iets veranderd is
+        if new_drives or removed_drives:
+            self._update_auto_format_switch_state()
 
         self.known_drives = current
         self.drive_poll_job = self.after(2000, self._poll_drives)
-        self._update_auto_format_switch_state()
 
-    def _refresh_drives(self):
-        drives = get_removable_drives()
+    def _refresh_drives(self, drives=None):
+        if drives is None:
+            drives = get_removable_drives()
+        current_selection = self.drive_var.get()
         if drives:
             labels = [d[1] for d in drives]
             letters = [d[0] for d in drives]
@@ -409,7 +430,11 @@ class App(ctk.CTk):
             self.drive_menu.configure(values=labels)
             self._drive_map = dict(zip(labels, letters))
             self._drive_size_map = dict(zip(labels, sizes))
-            self.drive_var.set(labels[0])
+            # Bewaar huidige selectie als die nog bestaat, anders eerste
+            if current_selection in labels:
+                self.drive_var.set(current_selection)
+            else:
+                self.drive_var.set(labels[0])
         else:
             self.drive_menu.configure(values=["— geen verwisselbare SD-kaart gevonden —"])
             self.drive_var.set("— geen verwisselbare SD-kaart gevonden —")
@@ -474,6 +499,7 @@ class App(ctk.CTk):
         win.title(f"Info bewerken — {version}")
         win.geometry("440x240")
         win.grab_set()
+        self._center_window(win, 440, 240)
 
         ctk.CTkLabel(win, text="Omschrijving:").grid(row=0, column=0, padx=16, pady=(16, 4), sticky="w")
         omschr_entry = ctk.CTkEntry(win, width=350)
@@ -607,6 +633,7 @@ class App(ctk.CTk):
         win.geometry("420x180")
         win.grab_set()
         win.grid_columnconfigure(0, weight=1)
+        self._center_window(win, 420, 180)
 
         msg = f"Weet je zeker dat je {drive} wil formatteren?\nAlle data op de drive wordt gewist."
         if drive_size:
@@ -645,6 +672,7 @@ class App(ctk.CTk):
         win.geometry("500x520")
         win.grab_set()
         win.grid_columnconfigure(0, weight=1)
+        self._center_window(win, 500, 520)
 
         ctk.CTkLabel(win, text="Instellingen voor de SD-kaart (doeldrive)",
                      font=ctk.CTkFont(weight="bold"), anchor="w").grid(

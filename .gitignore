@@ -9,3 +9,4 @@ build/
 dist/
 
 *.spec
+sd_manager_config.json
